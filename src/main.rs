@@ -8,7 +8,8 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use reqwest::StatusCode;
-use std::io::Error;
+use std::fmt;
+use std::error::Error;
 
 #[derive(Debug)]
 struct Instance {
@@ -18,6 +19,15 @@ struct Instance {
     version: String,
     instance_type: String,
     // registrations: bool,
+}
+
+#[derive(Debug)]
+struct HttpError(Box<dyn Error>);
+impl std::error::Error for HttpError {}
+impl fmt::Display for HttpError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{:?}", self)
+    }
 }
 
 fn main() -> Result<(), reqwest::Error> {
@@ -35,6 +45,11 @@ fn main() -> Result<(), reqwest::Error> {
             println!("Got: {}", received);
         }
     });
+
+    /*
+    mpsc für dispatcher
+    in thread: block für channel (n-channel für n-threads)
+    */
 
     for thread_nr in 1..5 {
         let tx_inner = mpsc::Sender::clone(&tx);
@@ -56,8 +71,7 @@ fn main() -> Result<(), reqwest::Error> {
                         thread::sleep(Duration::from_millis(120));
                     }
 
-                    _ => {
-                        let uri = target_uri.unwrap();
+                    Some(uri) => {
                         match tx_inner.send(format!("T{}: {}", thread_nr, uri)) {
                             Err(_) => eprintln!("Backfeed failed!"),
                             Ok(_) => {}
@@ -84,10 +98,12 @@ fn main() -> Result<(), reqwest::Error> {
     Ok(())
 }
 
-fn instance_data_gather(uri: String) -> Result<Instance, String> {
-    let echo_json: serde_json::Value = match reqwest::Client::new()
+fn instance_data_gather(uri: String) -> Result<Instance, Box<dyn Error>> {
+    let response = reqwest::Client::new()
         .get(&format!("https://{}/api/v1/instance", uri))
-        .send() {
+        .send();
+
+    let echo_json = match response {
         Ok(mut req) => {
             let status: StatusCode = req.status();
             println!("HTTP {}", status);
@@ -97,19 +113,20 @@ fn instance_data_gather(uri: String) -> Result<Instance, String> {
                 ()
             }
 
-            match req.json() {
+            let data: Result<serde_json::Value, _> = req.json();
+            match data {
                 Ok(data) => {
                     data
                 }
                 Err(e) => {
                     println!("{}", e);
-                    serde_json::from_str(&"{}")?
-                    // panic!("crash and burn");
+                    return Err(Box::new(HttpError(Box::new(e))));
+                    // return Err(Box::new(e));
                 }
             }
         }
-        Err(_e) => {
-            panic!("crash and burn");
+        Err(e) => {
+            return Err(Box::new(HttpError(Box::new(e))));
         }
     };
 
